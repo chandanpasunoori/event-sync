@@ -1,4 +1,5 @@
 app.json
+app2.json
 event-sync*
 cloudbuild.yaml
 dist/

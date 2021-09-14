@@ -38,18 +38,29 @@ func (data Event) Save() (map[string]bigquery.Value, string, error) {
 func SubscribePubsubAndPull(wg *sync.WaitGroup, job Job) chan *pubsub.Message {
 	buffer := int(float64(job.Destination.BatchSize) * float64(2))
 	eventChannel := make(chan *pubsub.Message, buffer)
+
 	wg.Add(1)
 	go func(subID string) {
 		defer wg.Done()
-		ctx := context.Background()
+
 		logger.Info("pubsub subscription starting for task: ", job.Name, " with channel buffer: ", buffer)
+		ctx := context.Background()
 		client, err := pubsub.NewClient(ctx, job.Source.PubsubConfig.ProjectId)
 		if err != nil {
 			logger.Fatalln(fmt.Errorf("pubsub.NewClient: %v", err))
 		}
+
 		defer client.Close()
 		for {
 			sub := client.Subscription(subID)
+			if ok, err := sub.Exists(ctx); err != nil {
+				logger.Fatalln(fmt.Errorf("subscription error: %v", err))
+			} else {
+				if !ok {
+					logger.Fatalln(fmt.Errorf("subscription %s not available", subID))
+				}
+			}
+			logger.Info("subscription started for task: ", job.Name)
 			// sub.ReceiveSettings.Synchronous = true
 			// sub.ReceiveSettings.MaxOutstandingMessages = job.Source.PubsubConfig.MaxOutstandingMessages
 			// receive messages until the passed in context is done.
@@ -69,7 +80,7 @@ func WaitAndBQSync(wg *sync.WaitGroup, job Job, eventChannel chan *pubsub.Messag
 	bqctx := context.Background()
 	bqclient, err := bigquery.NewClient(bqctx, job.Destination.BigqueryConfig.ProjectId)
 	if err != nil {
-		logger.Fatalln(fmt.Errorf("bigquery.NewClient: %v", err))
+		logger.Fatalln(fmt.Errorf("bigquery client error: %v", err))
 	}
 	defer bqclient.Close()
 
@@ -162,16 +173,12 @@ func WaitAndBQSync(wg *sync.WaitGroup, job Job, eventChannel chan *pubsub.Messag
 						messagesToIngest[xtype] <- msg
 					} else {
 						msg.Nack()
-						logger.Errorln("attributes: ", msg.Attributes)
-						logger.Errorln("event: ", xtype)
-						logger.Errorln("payload: ", string(msg.Data))
+						logger.Errorln("attributes: ", msg.Attributes, ", event: ", xtype, ", payload: ", string(msg.Data))
 						logger.Fatalln(fmt.Sprintf("event type %s not found", xtype))
 					}
 				} else {
 					msg.Nack()
-					logger.Errorln("attributes: ", msg.Attributes)
-					logger.Errorln("event: ", xtype)
-					logger.Errorln("payload: ", string(msg.Data))
+					logger.Errorln("attributes: ", msg.Attributes, ", event: ", xtype, ", payload: ", string(msg.Data))
 					logger.Fatalln(fmt.Sprintf("event type %s not found", xtype))
 				}
 			}
