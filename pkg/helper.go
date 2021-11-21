@@ -10,9 +10,12 @@ import (
 
 	"cloud.google.com/go/bigquery"
 	"cloud.google.com/go/pubsub"
+	"cloud.google.com/go/storage"
+	"github.com/google/uuid"
 	log "github.com/sirupsen/logrus"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
+	_ "k8s.io/client-go/plugin/pkg/client/auth/gcp"
 )
 
 var logger = log.Logger{
@@ -43,7 +46,7 @@ func SubscribePubsubAndPull(wg *sync.WaitGroup, job Job) chan *pubsub.Message {
 	go func(subID string) {
 		defer wg.Done()
 
-		logger.Info("pubsub subscription starting for task: ", job.Name, " with channel buffer: ", buffer)
+		logger.Info("pubsub subscription starting for task: ", job.Name, " subscriptionId: ", job.Source.PubsubConfig.SubscriptionId, " with channel buffer: ", buffer)
 		ctx := context.Background()
 		client, err := pubsub.NewClient(ctx, job.Source.PubsubConfig.ProjectId)
 		if err != nil {
@@ -62,7 +65,7 @@ func SubscribePubsubAndPull(wg *sync.WaitGroup, job Job) chan *pubsub.Message {
 			}
 			logger.Info("subscription started for task: ", job.Name)
 			// sub.ReceiveSettings.Synchronous = true
-			// sub.ReceiveSettings.MaxOutstandingMessages = job.Source.PubsubConfig.MaxOutstandingMessages
+			sub.ReceiveSettings.MaxOutstandingMessages = job.Source.PubsubConfig.MaxOutstandingMessages
 			// receive messages until the passed in context is done.
 			err := sub.Receive(ctx, func(ctx context.Context, msg *pubsub.Message) {
 				eventChannel <- msg
@@ -105,12 +108,13 @@ func WaitAndBQSync(wg *sync.WaitGroup, job Job, eventChannel chan *pubsub.Messag
 				for {
 					items := []Event{}
 					messagesForAck := []*pubsub.Message{}
-					timer := time.NewTimer(time.Second * 10)
+					du := time.Second * 10
+					timer := time.NewTimer(du)
 					for repeat := true; repeat; {
 						select {
 						case <-timer.C:
 							repeat = false
-							logger.Info("job: ", job.Name, " event_type: ", k, " 10 seconds elapsed, breaking loop")
+							logger.Info("job: ", job.Name, " event_type: ", k, " ", du.Seconds(), " seconds elapsed, breaking loop")
 						case mx := <-messagesToIngest[k]:
 							var data map[string]interface{}
 							err := json.Unmarshal(mx.Data, &data)
@@ -151,20 +155,13 @@ func WaitAndBQSync(wg *sync.WaitGroup, job Job, eventChannel chan *pubsub.Messag
 		}
 	}
 
-	ignoreChan := make(chan *pubsub.Message, buffer)
-	go func() {
-		for msg := range ignoreChan {
-			msg.Ack()
-			ignored++
-		}
-	}()
-
 	go func() {
 		defer wg.Done()
 		for msg := range eventChannel {
 			if xtype, ok := msg.Attributes[job.Source.PubsubConfig.AttributeKeyName]; ok {
 				if ingest, ok := eventsToIngest[xtype]; ok && !ingest {
-					ignoreChan <- msg
+					msg.Ack()
+					ignored++
 					continue
 				}
 
@@ -176,6 +173,170 @@ func WaitAndBQSync(wg *sync.WaitGroup, job Job, eventChannel chan *pubsub.Messag
 						logger.Errorln("attributes: ", msg.Attributes, ", event: ", xtype, ", payload: ", string(msg.Data))
 						logger.Fatalln(fmt.Sprintf("event type %s not found", xtype))
 					}
+				} else {
+					msg.Nack()
+					logger.Errorln("attributes: ", msg.Attributes, ", event: ", xtype, ", payload: ", string(msg.Data))
+					logger.Fatalln(fmt.Sprintf("event type %s not found", xtype))
+				}
+			}
+		}
+	}()
+}
+
+func writeToBlob(et time.Time, timeKey, k string, job Job, storageClient *storage.Client, bulkSize int) chan *pubsub.Message {
+	ch := make(chan *pubsub.Message, bulkSize)
+	uid := uuid.New().String()
+	fileId := 0
+	waiting := time.Now()
+	go func() {
+		for repeatWriter := true; repeatWriter; {
+			//@todo validate stop when its more than a certain amount of time without any items
+			items := int(0)
+			messagesForAck := []*pubsub.Message{}
+			hrKey := et.Hour()
+
+			blobName := fmt.Sprintf("%s/%s/dt=%s/hr=%d/uid=%s/%d.json",
+				job.Destination.GoogleStorageConfig.BlobPrefix,
+				k,
+				et.Format("2006-01-02"),
+				hrKey,
+				uid,
+				fileId,
+			)
+			fileId++
+
+			bucketRef := storageClient.Bucket(job.Destination.GoogleStorageConfig.Bucket)
+
+			blobRef := bucketRef.Object(blobName)
+			blob := blobRef.NewWriter(context.Background())
+
+			blob.ObjectAttrs.ContentType = "application/json"
+
+			logger.Info("blobName started: ", blobName)
+
+			du := time.Second * 120
+			timer := time.NewTimer(du)
+			for repeat := true; repeat; {
+				select {
+				case <-timer.C:
+					repeat = false
+					logger.Info("job: ", job.Name, " event_type: ", k, " ", du.Seconds(), " seconds elapsed, breaking loop")
+				case mx := <-ch:
+					if _, err := blob.Write(mx.Data); err != nil {
+						mx.Nack()
+						logger.Info("error: ", err)
+						logger.Fatalln(fmt.Errorf("blob.Write: %v", err))
+					}
+					if _, err := blob.Write([]byte("\n")); err != nil {
+						mx.Nack()
+						logger.Info("error: ", err)
+						logger.Fatalln(fmt.Errorf("blob.Write: %v", err))
+					}
+					items++
+					messagesForAck = append(messagesForAck, mx)
+					if items >= bulkSize {
+						repeat = false
+					}
+				}
+			}
+			timer.Stop()
+			if items == 0 {
+				logger.Info("job: ", job.Name, " event_type: ", k, " items is empty, skipping blob save")
+				if time.Since(waiting).Minutes() >= 5 {
+					repeatWriter = false
+					logger.Info("job: ", job.Name, " event_type: ", k, " time key: ", timeKey, " uid: ", uid, " writer stopping due to no new messages")
+				}
+				continue
+			}
+
+			waiting = time.Now()
+
+			err := blob.Close()
+			if err != nil {
+				logger.Info("error: ", err)
+				logger.Fatalln(fmt.Errorf("blob.Close: %v", err))
+			}
+
+			for _, ms := range messagesForAck {
+				ms.Ack()
+			}
+		}
+		writerMutex.Lock()
+		delete(timeKeyWriters, timeKey)
+		writerMutex.Unlock()
+		close(ch)
+		logger.Info("job: ", job.Name, " event_type: ", k, " time key: ", timeKey, " uid: ", uid, " writer stopped")
+	}()
+	return ch
+}
+
+var (
+	timeKeyWriters = make(map[string]chan *pubsub.Message)
+	writerMutex    sync.Mutex
+)
+
+func WaitAndGoogleStorageSync(wg *sync.WaitGroup, job Job, eventChannel chan *pubsub.Message) {
+	wg.Add(1)
+	storageCtx := context.Background()
+	storageClient, err := storage.NewClient(storageCtx)
+	if err != nil {
+		logger.Fatalln(fmt.Errorf("google storage client client error: %v", err))
+	}
+	ignored := uint64(0)
+
+	// Create a map of event tables to insert into
+	eventsToIngest := make(map[string]bool)
+	messagesToIngest := make(map[string]chan *pubsub.Message)
+	buffer := int(float64(job.Destination.BatchSize) * float64(1.25))
+	bulkSize := job.Destination.BatchSize
+	logger.Info("google storage sync started for task: ", job.Name, " with bulkSize: ", bulkSize, " with buffer: ", buffer)
+
+	for _, filter := range job.Filters {
+		if filter.Action == "ingest" {
+			messagesToIngest[filter.Name] = make(chan *pubsub.Message, buffer)
+			it := 0
+			go func(k string) {
+				for mx := range messagesToIngest[k] {
+					var event map[string]interface{}
+					err := json.Unmarshal(mx.Data, &event)
+					if err != nil {
+						mx.Nack()
+						logger.Fatalln(fmt.Errorf("%s.Put: %v", k, err))
+					}
+					etNumber := event[job.Destination.TimestampColumnName].(float64)
+					et := time.Unix(int64(etNumber), 0)
+
+					timeKey := et.Format("2006-01-02-15")
+
+					wr, ok := timeKeyWriters[timeKey]
+					if !ok {
+						writerMutex.Lock()
+						wr = writeToBlob(et, timeKey, k, job, storageClient, bulkSize)
+						timeKeyWriters[timeKey] = wr
+						writerMutex.Unlock()
+					}
+					wr <- mx
+					it++
+				}
+			}(filter.Name)
+			eventsToIngest[filter.Name] = true
+		} else {
+			eventsToIngest[filter.Name] = false
+		}
+	}
+
+	go func() {
+		defer wg.Done()
+		for msg := range eventChannel {
+			if xtype, ok := msg.Attributes[job.Source.PubsubConfig.AttributeKeyName]; ok {
+				if ingest, ok := eventsToIngest[xtype]; ok && !ingest {
+					msg.Ack()
+					ignored++
+					continue
+				}
+
+				if _, ok := eventsToIngest[xtype]; ok {
+					messagesToIngest[xtype] <- msg
 				} else {
 					msg.Nack()
 					logger.Errorln("attributes: ", msg.Attributes, ", event: ", xtype, ", payload: ", string(msg.Data))

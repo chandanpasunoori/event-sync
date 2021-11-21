@@ -17,6 +17,9 @@ func SyncEvents(config Config) {
 			if job.Destination.Type == "bigquery" {
 				WaitAndBQSync(&wg, job, eventChannel)
 			}
+			if job.Destination.Type == "google-storage" {
+				WaitAndGoogleStorageSync(&wg, job, eventChannel)
+			}
 		}
 	}
 	wg.Wait()

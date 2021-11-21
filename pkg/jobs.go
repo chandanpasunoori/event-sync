@@ -14,10 +14,17 @@ type BigqueryConfig struct {
 	ProjectId string `json:"projectId"`
 	Dataset   string `json:"dataset"`
 }
+type GoogleStorageConfig struct {
+	ProjectId  string `json:"projectId"`
+	Bucket     string `json:"bucket"`
+	BlobPrefix string `json:"blobPrefix"`
+}
 type Destination struct {
-	Type           string         `json:"type"`
-	BatchSize      int            `json:"batchSize"`
-	BigqueryConfig BigqueryConfig `json:"bigqueryConfig"`
+	Type                string              `json:"type"`
+	BatchSize           int                 `json:"batchSize"`
+	TimestampColumnName string              `json:"timestampColumnName"`
+	BigqueryConfig      BigqueryConfig      `json:"bigqueryConfig"`
+	GoogleStorageConfig GoogleStorageConfig `json:"googleStorageConfig"`
 }
 type Target struct {
 	Table string `json:"table"`
