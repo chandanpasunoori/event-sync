@@ -306,7 +306,7 @@ func WaitAndGoogleStorageSync(wg *sync.WaitGroup, job Job, eventChannel chan *pu
 					etNumber := event[job.Destination.TimestampColumnName].(float64)
 					et := time.Unix(int64(etNumber), 0)
 
-					timeKey := et.Format("2006-01-02-15")
+					timeKey := fmt.Sprintf("%s-%s", k, et.Format("2006-01-02-15"))
 
 					wr, ok := timeKeyWriters[timeKey]
 					if !ok {
