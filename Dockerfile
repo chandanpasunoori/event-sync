@@ -1,9 +1,5 @@
-FROM alpine:latest as alpine_builder
+FROM alpine:3.9
 RUN apk --no-cache add ca-certificates
 RUN apk --no-cache add tzdata
-
-FROM scratch
-COPY --from=alpine_builder /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/
-COPY --from=alpine_builder /usr/share/zoneinfo /usr/share/zoneinfo
-ENTRYPOINT ["/event-sync"]
 COPY event-sync /
+ENTRYPOINT ["/event-sync"]
