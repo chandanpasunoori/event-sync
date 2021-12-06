@@ -169,14 +169,14 @@ func WaitAndBQSync(wg *sync.WaitGroup, job Job, eventChannel chan *pubsub.Messag
 					if _, ok := inserters[xtype]; ok {
 						messagesToIngest[xtype] <- msg
 					} else {
-						msg.Nack()
+						msg.Ack()
 						logger.Errorln("attributes: ", msg.Attributes, ", event: ", xtype, ", payload: ", string(msg.Data))
-						logger.Fatalln(fmt.Sprintf("event type %s not found", xtype))
+						logger.Errorln(fmt.Sprintf("event type %s not found", xtype))
 					}
 				} else {
-					msg.Nack()
+					msg.Ack()
 					logger.Errorln("attributes: ", msg.Attributes, ", event: ", xtype, ", payload: ", string(msg.Data))
-					logger.Fatalln(fmt.Sprintf("event type %s not found", xtype))
+					logger.Errorln(fmt.Sprintf("event type %s not found", xtype))
 				}
 			}
 		}
