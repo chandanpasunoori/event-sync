@@ -338,9 +338,10 @@ func WaitAndGoogleStorageSync(wg *sync.WaitGroup, job Job, eventChannel chan *pu
 				if _, ok := eventsToIngest[xtype]; ok {
 					messagesToIngest[xtype] <- msg
 				} else {
-					msg.Nack()
+					// @todo: create separate topic and push all unknown events to it, with attributes and payload
+					msg.Ack()
 					logger.Errorln("attributes: ", msg.Attributes, ", event: ", xtype, ", payload: ", string(msg.Data))
-					logger.Fatalln(fmt.Sprintf("event type %s not found", xtype))
+					logger.Errorln(fmt.Sprintf("event type %s not found", xtype))
 				}
 			}
 		}
