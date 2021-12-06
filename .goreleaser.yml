@@ -24,10 +24,10 @@ builds:
       - arm64
 archives:
   - replacements:
-      darwin: Darwin
-      linux: Linux
-      windows: Windows
-      amd64: x86_64
+      darwin: darwin
+      linux: linux
+      windows: windows
+      amd64: amd64
 checksum:
   name_template: "checksums.txt"
 snapshot:
@@ -41,7 +41,6 @@ changelog:
 dockers:
   - image_templates:
       - ghcr.io/chandanpasunoori/{{ .ProjectName }}:{{ .Version }}-amd64
-      - docker.io/chandanpasunoori/{{ .ProjectName }}:{{ .Version }}-amd64
     dockerfile: Dockerfile
     use: buildx
     build_flag_templates:
@@ -56,7 +55,6 @@ dockers:
       - --label=org.opencontainers.image.licenses=MIT
   - image_templates:
       - ghcr.io/chandanpasunoori/{{ .ProjectName }}:{{ .Version }}-arm64v8
-      - docker.io/chandanpasunoori/{{ .ProjectName }}:{{ .Version }}-arm64v8
     goarch: arm64
     dockerfile: Dockerfile
     use: buildx
@@ -79,11 +77,4 @@ docker_manifests:
     image_templates:
       - ghcr.io/chandanpasunoori/{{ .ProjectName }}:{{ .Version }}-amd64
       - ghcr.io/chandanpasunoori/{{ .ProjectName }}:{{ .Version }}-arm64v8
-  - name_template: docker.io/chandanpasunoori/{{ .ProjectName }}:{{ .Version }}
-    image_templates:
-      - docker.io/chandanpasunoori/{{ .ProjectName }}:{{ .Version }}-amd64
-      - docker.io/chandanpasunoori/{{ .ProjectName }}:{{ .Version }}-arm64v8
-  - name_template: docker.io/chandanpasunoori/{{ .ProjectName }}:latest
-    image_templates:
-      - docker.io/chandanpasunoori/{{ .ProjectName }}:{{ .Version }}-amd64
-      - docker.io/chandanpasunoori/{{ .ProjectName }}:{{ .Version }}-arm64v8
+
