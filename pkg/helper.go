@@ -152,7 +152,7 @@ func WaitAndBQSync(wg *sync.WaitGroup, job Job, eventChannel chan *pubsub.Messag
 						ms.Ack()
 					}
 					metrics.SyncEvent.Add(float64(len(items)))
-					metrics.SyncEventWithLabel.With(prometheus.Labels{"event_type": k}).Add(float64(len(items)))
+					metrics.SyncEventWithLabel.With(prometheus.Labels{"type": k}).Add(float64(len(items)))
 				}
 			}(filter.Name)
 			eventsToIngest[filter.Name] = true
@@ -265,7 +265,7 @@ func writeToBlob(et time.Time, timeKey, k string, job Job, storageClient *storag
 				ms.Ack()
 			}
 			metrics.SyncEvent.Add(float64(items))
-			metrics.SyncEventWithLabel.With(prometheus.Labels{"event_type": k}).Add(float64(items))
+			metrics.SyncEventWithLabel.With(prometheus.Labels{"type": k}).Add(float64(items))
 		}
 		writerMutex.Lock()
 		delete(timeKeyWriters, timeKey)
