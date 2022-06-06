@@ -3,10 +3,13 @@ package cmd
 import (
 	"encoding/json"
 	"io/ioutil"
+	"net/http"
 	"os"
 
 	"github.com/chandanpasunoori/event-sync/pkg"
-	log "github.com/sirupsen/logrus"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
+	"github.com/rs/zerolog"
+	"github.com/rs/zerolog/log"
 	"github.com/spf13/cobra"
 	"github.com/spf13/cobra/doc"
 )
@@ -25,45 +28,56 @@ var rootCmd = &cobra.Command{
 	Long:    `Built to ease process of syncing data between different storage systems`,
 	Version: version,
 	Run: func(cmd *cobra.Command, args []string) {
+
+		zerolog.TimeFieldFormat = zerolog.TimeFormatUnix
+		zerolog.SetGlobalLevel(zerolog.DebugLevel)
+
 		if verbose {
-			logger.SetLevel(log.DebugLevel)
+			zerolog.SetGlobalLevel(zerolog.TraceLevel)
 		}
 		configBytes, err := ioutil.ReadFile(configDoc)
 		if err != nil {
-			logger.WithError(err).Errorf("config file not found at " + configDoc)
+			log.Error().Err(err).Str("path", configDoc).Msg("config file not found")
 			os.Exit(1)
 		}
 		if err := json.Unmarshal(configBytes, &config); err != nil {
-			logger.WithError(err).Errorf("error parsing config")
+			log.Error().Err(err).Msg("error parsing config")
 			os.Exit(1)
 		}
-		logger.Info(
-			"event-sync " + version + " is ready to sync events",
-		)
-		pkg.SyncEvents(config)
+		log.Info().Str("version", version).Msg("event-sync is ready to sync events")
+		go pkg.SyncEvents(config)
+		runServer()
 	},
 }
 
-var logger = log.Logger{
-	Out: os.Stdout,
-	Formatter: &log.TextFormatter{
-		ForceColors:     true,
-		FullTimestamp:   true,
-		TimestampFormat: "2006-01-02 15:04:05.000",
-	},
-	Level: log.InfoLevel,
+func runServer() {
+	http.Handle("/metrics", promhttp.Handler())
+	healthCheckHandler := http.HandlerFunc(func(rw http.ResponseWriter, r *http.Request) {
+		rw.Header().Set("content-type", "application/json")
+		rw.WriteHeader(200)
+		json.NewEncoder(rw).Encode(map[string]string{"status": "ok"})
+	})
+
+	http.Handle("/", healthCheckHandler)
+	http.Handle("/_status/healthz", healthCheckHandler)
+
+	err := http.ListenAndServe(":8080", nil)
+	if err != nil {
+		log.Warn().Err(err).Msg("http server error")
+	}
+	log.Info().Msg("server stopped")
 }
 
 func Execute() {
 	if genDoc := os.Getenv("GEN_DOC"); genDoc == "true" {
 		err := doc.GenMarkdownTree(rootCmd, "./docs")
 		if err != nil {
-			log.Errorf("Failed generating docs: %v", err)
+			log.Error().Err(err).Msg("failed generating docs")
 		}
 	}
 
 	if err := rootCmd.Execute(); err != nil {
-		logger.WithError(err).Errorf("error executing command")
+		log.Error().Err(err).Msg("error executing command")
 		os.Exit(1)
 	}
 }
