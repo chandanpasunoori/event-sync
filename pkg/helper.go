@@ -144,9 +144,9 @@ func WaitAndBQSync(wg *sync.WaitGroup, job Job, eventChannel chan *pubsub.Messag
 					err := inserters[k].Put(ctx, items)
 					if err != nil {
 						for _, ms := range messagesForAck {
-							ms.Nack()
+							ms.Ack()
 						}
-						log.Fatal().Err(err).Str("eventType", k).Msg("bigquery streaming put error")
+						log.Error().Err(err).Str("eventType", k).Msg("bigquery streaming put error")
 					}
 					for _, ms := range messagesForAck {
 						ms.Ack()
