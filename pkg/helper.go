@@ -127,7 +127,9 @@ func WaitAndBQSync(wg *sync.WaitGroup, job Job, eventChannel chan *pubsub.Messag
 							var data map[string]interface{}
 							err := json.Unmarshal(mx.Data, &data)
 							if err != nil {
-								log.Fatal().Err(err).Msg("unmarshal error")
+								mx.Ack()
+								log.Error().Err(err).Msg("unmarshal error")
+								continue
 							}
 							items = append(items, data)
 							messagesForAck = append(messagesForAck, mx)
@@ -176,11 +178,11 @@ func WaitAndBQSync(wg *sync.WaitGroup, job Job, eventChannel chan *pubsub.Messag
 						messagesToIngest[xtype] <- msg
 					} else {
 						msg.Ack()
-						log.Fatal().Interface("attributes", msg.Attributes).Str("eventType", xtype).Msg("event type not found")
+						log.Error().Interface("attributes", msg.Attributes).Str("eventType", xtype).Msg("event type not found")
 					}
 				} else {
 					msg.Ack()
-					log.Fatal().Interface("attributes", msg.Attributes).Str("eventType", xtype).Msg("event type not found")
+					log.Error().Interface("attributes", msg.Attributes).Str("eventType", xtype).Msg("event type not found")
 				}
 			}
 		}
@@ -313,8 +315,9 @@ func WaitAndGoogleStorageSync(wg *sync.WaitGroup, job Job, eventChannel chan *pu
 					var event map[string]interface{}
 					err := json.Unmarshal(mx.Data, &event)
 					if err != nil {
-						mx.Nack()
-						log.Fatal().Err(err).Msg("unable to unmarshal event")
+						mx.Ack()
+						log.Error().Err(err).Msg("unable to unmarshal event")
+						continue
 					}
 					etNumber := event[job.Destination.TimestampColumnName].(float64)
 					et := time.Unix(int64(etNumber), 0)

@@ -4,3 +4,4 @@ event-sync*
 cloudbuild.yaml
 dist/
 tmp
+oryxBuildBinary
