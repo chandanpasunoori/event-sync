@@ -30,7 +30,7 @@ func (data Event) Save() (map[string]bigquery.Value, string, error) {
 }
 
 func SubscribePubsubAndPull(wg *sync.WaitGroup, job Job) chan *pubsub.Message {
-	buffer := int(float64(job.Destination.BatchSize) * float64(2))
+	buffer := int(float64(job.Destination.BatchSize) * float64(10))
 	eventChannel := make(chan *pubsub.Message, buffer)
 
 	wg.Add(1)
@@ -40,10 +40,11 @@ func SubscribePubsubAndPull(wg *sync.WaitGroup, job Job) chan *pubsub.Message {
 		log := log.With().
 			Str("taskName", job.Name).
 			Int("bufferSize", buffer).
-			Str("subscriptionId", job.Source.PubsubConfig.SubscriptionId).
+			Str("subscriptionId", subID).
 			Logger()
 
 		log.Info().Msg("pubsub subscription starting")
+
 		ctx := context.Background()
 		client, err := pubsub.NewClient(ctx, job.Source.PubsubConfig.ProjectId)
 		if err != nil {
@@ -61,12 +62,12 @@ func SubscribePubsubAndPull(wg *sync.WaitGroup, job Job) chan *pubsub.Message {
 				}
 			}
 			log.Info().Msg("subscription started")
-			// sub.ReceiveSettings.Synchronous = true
 			sub.ReceiveSettings.MaxOutstandingMessages = job.Source.PubsubConfig.MaxOutstandingMessages
 			// receive messages until the passed in context is done.
 			err := sub.Receive(ctx, func(ctx context.Context, msg *pubsub.Message) {
 				eventChannel <- msg
 			})
+
 			if err != nil && status.Code(err) != codes.Canceled {
 				log.Fatal().Err(err).Msg("subscription receive error")
 			}
@@ -96,7 +97,7 @@ func WaitAndBQSync(wg *sync.WaitGroup, job Job, eventChannel chan *pubsub.Messag
 	// Create a map of event tables to insert into
 	eventsToIngest := make(map[string]bool)
 	messagesToIngest := make(map[string]chan *pubsub.Message)
-	buffer := int(float64(job.Destination.BatchSize) * float64(1.25))
+	buffer := int(float64(job.Destination.BatchSize) * float64(10))
 	bulkSize := job.Destination.BatchSize
 
 	log = log.With().
@@ -108,6 +109,7 @@ func WaitAndBQSync(wg *sync.WaitGroup, job Job, eventChannel chan *pubsub.Messag
 
 	for _, filter := range job.Filters {
 		log := log.With().Str("eventType", filter.Name).Logger()
+
 		if filter.Action == "ingest" {
 			inserters[filter.Name] = bqclient.Dataset(job.Destination.BigqueryConfig.Dataset).Table(filter.Target.Table).Inserter()
 			messagesToIngest[filter.Name] = make(chan *pubsub.Message, buffer)
@@ -122,7 +124,7 @@ func WaitAndBQSync(wg *sync.WaitGroup, job Job, eventChannel chan *pubsub.Messag
 						select {
 						case <-timer.C:
 							repeat = false
-							log.Info().Dur("duration", du).Msg(fmt.Sprintf("blob writer timed out, no events in last %s, breaking loop", du))
+							log.Info().Dur("duration", du).Msg(fmt.Sprintf("bq writer timed out, no events in last %s, breaking loop", du))
 						case mx := <-messagesToIngest[k]:
 							var data map[string]interface{}
 							err := json.Unmarshal(mx.Data, &data)
@@ -139,8 +141,8 @@ func WaitAndBQSync(wg *sync.WaitGroup, job Job, eventChannel chan *pubsub.Messag
 						}
 					}
 					timer.Stop()
-					if len(items) == 0 {
-						log.Info().Dur("duration", du).Msg("items is empty, skipping blob save")
+					if len(items) <= 0 {
+						log.Info().Dur("duration", du).Msg("items is empty, skipping bq submit")
 						continue
 					}
 					err := inserters[k].Put(ctx, items)
@@ -160,8 +162,10 @@ func WaitAndBQSync(wg *sync.WaitGroup, job Job, eventChannel chan *pubsub.Messag
 				}
 			}(filter.Name)
 			eventsToIngest[filter.Name] = true
+			log.Info().Err(err).Str("filterName", filter.Name).Msg("filter registered")
 		} else {
 			eventsToIngest[filter.Name] = false
+			log.Error().Err(err).Str("filterName", filter.Name).Msg("filter ignored")
 		}
 	}
 
@@ -172,6 +176,7 @@ func WaitAndBQSync(wg *sync.WaitGroup, job Job, eventChannel chan *pubsub.Messag
 				if ingest, ok := eventsToIngest[xtype]; ok && !ingest {
 					msg.Ack()
 					ignored++
+					log.Info().Uint64("ignored", ignored).Msg("ignored")
 					continue
 				}
 
@@ -186,6 +191,9 @@ func WaitAndBQSync(wg *sync.WaitGroup, job Job, eventChannel chan *pubsub.Messag
 					msg.Ack()
 					log.Error().Interface("attributes", msg.Attributes).Str("eventType", xtype).Msg("event type not found")
 				}
+			} else {
+				msg.Ack()
+				log.Error().Interface("attributes", msg.Attributes).Msg("event type not found")
 			}
 		}
 	}()
@@ -297,7 +305,7 @@ func WaitAndGoogleStorageSync(wg *sync.WaitGroup, job Job, eventChannel chan *pu
 	// Create a map of event tables to insert into
 	eventsToIngest := make(map[string]bool)
 	messagesToIngest := make(map[string]chan *pubsub.Message)
-	buffer := int(float64(job.Destination.BatchSize) * float64(1.25))
+	buffer := int(float64(job.Destination.BatchSize) * float64(10))
 	bulkSize := job.Destination.BatchSize
 
 	log.Info().
@@ -360,6 +368,9 @@ func WaitAndGoogleStorageSync(wg *sync.WaitGroup, job Job, eventChannel chan *pu
 					msg.Ack()
 					log.Error().Interface("attributes", msg.Attributes).Str("eventType", xtype).Msg("event type not found")
 				}
+			} else {
+				msg.Ack()
+				log.Error().Interface("attributes", msg.Attributes).Msg("event type not found")
 			}
 		}
 	}()
