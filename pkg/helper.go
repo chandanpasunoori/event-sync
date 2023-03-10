@@ -122,7 +122,7 @@ func WaitAndBQSync(wg *sync.WaitGroup, job Job, eventChannel chan *pubsub.Messag
 						select {
 						case <-timer.C:
 							repeat = false
-							log.Info().Dur("duration", du).Msg("blob writer timed out, no events, breaking loop")
+							log.Info().Dur("duration", du).Msg(fmt.Sprintf("blob writer timed out, no events in last %s, breaking loop", du))
 						case mx := <-messagesToIngest[k]:
 							var data map[string]interface{}
 							err := json.Unmarshal(mx.Data, &data)
@@ -153,6 +153,8 @@ func WaitAndBQSync(wg *sync.WaitGroup, job Job, eventChannel chan *pubsub.Messag
 					for _, ms := range messagesForAck {
 						ms.Ack()
 					}
+
+					log.Info().Int("count", len(items)).Msg("messaged pushed to bigquery")
 					metrics.SyncEvent.Add(float64(len(items)))
 					metrics.SyncEventWithLabel.With(prometheus.Labels{"type": k}).Add(float64(len(items)))
 				}
@@ -229,7 +231,7 @@ func writeToBlob(et time.Time, timeKey, k string, job Job, storageClient *storag
 				select {
 				case <-timer.C:
 					repeat = false
-					log.Info().Dur("duration", du).Msg("blob writer timed out, no events, breaking loop")
+					log.Info().Dur("duration", du).Msg(fmt.Sprintf("blob writer timed out, no events in last %s, breaking loop", du))
 				case mx := <-ch:
 					if _, err := blob.Write(mx.Data); err != nil {
 						mx.Nack()
