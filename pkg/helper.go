@@ -29,7 +29,7 @@ func (data Event) Save() (map[string]bigquery.Value, string, error) {
 	return r, bigquery.NoDedupeID, nil
 }
 
-func SubscribePubsubAndPull(wg *sync.WaitGroup, job Job) chan *pubsub.Message {
+func SubscribePubsubAndPull(ctx context.Context, wg *sync.WaitGroup, job Job) chan *pubsub.Message {
 	buffer := int(float64(job.Destination.BatchSize) * float64(10))
 	eventChannel := make(chan *pubsub.Message, buffer)
 
@@ -44,8 +44,6 @@ func SubscribePubsubAndPull(wg *sync.WaitGroup, job Job) chan *pubsub.Message {
 			Logger()
 
 		log.Info().Msg("pubsub subscription starting")
-
-		ctx := context.Background()
 		client, err := pubsub.NewClient(ctx, job.Source.PubsubConfig.ProjectId)
 		if err != nil {
 			log.Fatal().Err(err).Msg("pubsub client error")
@@ -54,38 +52,45 @@ func SubscribePubsubAndPull(wg *sync.WaitGroup, job Job) chan *pubsub.Message {
 		defer client.Close()
 		for {
 			sub := client.Subscription(subID)
-			if ok, err := sub.Exists(ctx); err != nil {
-				log.Fatal().Err(err).Msg("subscription error")
-			} else {
-				if !ok {
-					log.Fatal().Err(err).Msg("subscription not available")
+			ok, err := sub.Exists(ctx)
+			if err != nil {
+				if status.Code(err) == codes.Canceled {
+					log.Warn().Str("reason", "application shutting down").Msg("subscription cancelled")
+					break
 				}
+				log.Error().Err(err).Msg("subscription error")
+				break
+			}
+			if !ok {
+				log.Fatal().Err(err).Msg("subscription not available")
 			}
 			log.Info().Msg("subscription started")
 			sub.ReceiveSettings.MaxOutstandingMessages = job.Source.PubsubConfig.MaxOutstandingMessages
 			// receive messages until the passed in context is done.
-			err := sub.Receive(ctx, func(ctx context.Context, msg *pubsub.Message) {
+			err = sub.Receive(ctx, func(ctx context.Context, msg *pubsub.Message) {
 				eventChannel <- msg
 			})
-
 			if err != nil && status.Code(err) != codes.Canceled {
-				log.Fatal().Err(err).Msg("subscription receive error")
+				log.Error().Err(err).Msg("subscription receive error")
 			}
 		}
+		log.Error().Msg("closing main event channel")
+		close(eventChannel)
+		log.Error().Msg("closed main event channel")
 	}(job.Source.PubsubConfig.SubscriptionId)
+
 	return eventChannel
 }
 
-func WaitAndBQSync(wg *sync.WaitGroup, job Job, eventChannel chan *pubsub.Message) {
+func WaitAndBQSync(ctx context.Context, wg *sync.WaitGroup, job Job, eventChannel chan *pubsub.Message) {
 	wg.Add(1)
-	bqctx := context.Background()
 
 	log := log.With().
 		Str("taskName", job.Name).
 		Str("subscriptionId", job.Source.PubsubConfig.SubscriptionId).
 		Logger()
 
-	bqclient, err := bigquery.NewClient(bqctx, job.Destination.BigqueryConfig.ProjectId)
+	bqclient, err := bigquery.NewClient(ctx, job.Destination.BigqueryConfig.ProjectId)
 	if err != nil {
 		log.Fatal().Err(err).Msg("bigquery client error")
 	}
@@ -114,7 +119,6 @@ func WaitAndBQSync(wg *sync.WaitGroup, job Job, eventChannel chan *pubsub.Messag
 			inserters[filter.Name] = bqclient.Dataset(job.Destination.BigqueryConfig.Dataset).Table(filter.Target.Table).Inserter()
 			messagesToIngest[filter.Name] = make(chan *pubsub.Message, buffer)
 			go func(k string) {
-				ctx := context.Background()
 				for {
 					items := []Event{}
 					messagesForAck := []*pubsub.Message{}
@@ -125,6 +129,9 @@ func WaitAndBQSync(wg *sync.WaitGroup, job Job, eventChannel chan *pubsub.Messag
 						case <-timer.C:
 							repeat = false
 							log.Info().Dur("duration", du).Msg(fmt.Sprintf("bq writer timed out, no events in last %s, breaking loop", du))
+						case <-ctx.Done():
+							repeat = false
+							log.Info().Dur("duration", du).Msg("context is cancelled, breaking loop")
 						case mx := <-messagesToIngest[k]:
 							var data map[string]interface{}
 							err := json.Unmarshal(mx.Data, &data)
@@ -196,15 +203,20 @@ func WaitAndBQSync(wg *sync.WaitGroup, job Job, eventChannel chan *pubsub.Messag
 				log.Error().Interface("attributes", msg.Attributes).Msg("event type not found")
 			}
 		}
+		log.Error().Msg("closing all job/filter channels")
+		for _, c := range messagesToIngest {
+			close(c)
+		}
 	}()
 }
 
-func writeToBlob(et time.Time, timeKey, k string, job Job, storageClient *storage.Client, bulkSize int) chan *pubsub.Message {
+func writeToBlob(ctx context.Context, et time.Time, timeKey string, filter Filter, job Job, storageClient *storage.Client, bulkSize int, loadToBigQuery bool) chan *pubsub.Message {
 	ch := make(chan *pubsub.Message, bulkSize)
 	uid := uuid.New().String()
 	fileId := 0
 	waiting := time.Now()
-	log := log.With().Str("eventType", k).Str("taskName", job.Name).Logger()
+	log := log.With().Str("eventType", filter.Name).Str("taskName", job.Name).Logger()
+	blobs := make([]string, 0)
 	go func() {
 		for repeatWriter := true; repeatWriter; {
 			//@todo validate stop when its more than a certain amount of time without any items
@@ -214,7 +226,7 @@ func writeToBlob(et time.Time, timeKey, k string, job Job, storageClient *storag
 
 			blobName := fmt.Sprintf("%s/%s/dt=%s/hr=%d/uid=%s/%d.json",
 				job.Destination.GoogleStorageConfig.BlobPrefix,
-				k,
+				filter.Name,
 				et.Format("2006-01-02"),
 				hrKey,
 				uid,
@@ -225,11 +237,11 @@ func writeToBlob(et time.Time, timeKey, k string, job Job, storageClient *storag
 			bucketRef := storageClient.Bucket(job.Destination.GoogleStorageConfig.Bucket)
 
 			blobRef := bucketRef.Object(blobName)
-			blob := blobRef.NewWriter(context.Background())
+			blob := blobRef.NewWriter(context.TODO())
 
 			blob.ObjectAttrs.ContentType = "application/json"
 
-			log := log.With().Str("blobName", blobName).Logger()
+			log := log.With().Str("blobName", blobName).Str("timeKey", timeKey).Str("uid", uid).Logger()
 
 			log.Info().Msg("blob writer started")
 
@@ -239,7 +251,11 @@ func writeToBlob(et time.Time, timeKey, k string, job Job, storageClient *storag
 				select {
 				case <-timer.C:
 					repeat = false
-					log.Info().Dur("duration", du).Msg(fmt.Sprintf("blob writer timed out, no events in last %s, breaking loop", du))
+					log.Info().Dur("duration", du).Msgf("blob writer timed out, no events in last %s, breaking loop", du)
+				case <-ctx.Done():
+					repeat = false
+					repeatWriter = false
+					log.Info().Dur("duration", du).Msg("context is cancelled, breaking loop")
 				case mx := <-ch:
 					if _, err := blob.Write(mx.Data); err != nil {
 						mx.Nack()
@@ -261,7 +277,7 @@ func writeToBlob(et time.Time, timeKey, k string, job Job, storageClient *storag
 				log.Info().Dur("duration", du).Msg("items is empty, skipping blob save")
 				if time.Since(waiting).Minutes() >= 5 {
 					repeatWriter = false
-					log.Info().Dur("duration", du).Str("timeKey", timeKey).Str("uid", uid).Msg("writer stopping due to no new messages")
+					log.Info().Dur("duration", du).Dur("waited", time.Since(waiting)).Msg("writer stopping due to no new messages")
 				}
 				continue
 			}
@@ -270,20 +286,65 @@ func writeToBlob(et time.Time, timeKey, k string, job Job, storageClient *storag
 
 			err := blob.Close()
 			if err != nil {
-				log.Fatal().Err(err).Str("blobName", blobName).Msg("unable to close blob writer")
+				log.Fatal().Err(err).Msg("unable to close blob writer")
 			}
+
+			//todo: store blobs to persistant storage (local disk file, sql db, mongo, redis)
+			blobs = append(blobs, blobName)
 
 			for _, ms := range messagesForAck {
 				ms.Ack()
 			}
 			metrics.SyncEvent.Add(float64(items))
-			metrics.SyncEventWithLabel.With(prometheus.Labels{"type": k}).Add(float64(items))
+			metrics.SyncEventWithLabel.With(prometheus.Labels{"type": filter.Name}).Add(float64(items))
 		}
 		writerMutex.Lock()
 		delete(timeKeyWriters, timeKey)
 		writerMutex.Unlock()
 		close(ch)
-		log.Info().Str("timeKey", timeKey).Str("uid", uid).Msg("writer stopped")
+		log.Info().Msg("writer stopped")
+
+		if loadToBigQuery {
+			if len(blobs) > 0 {
+				bqclient, err := bigquery.NewClient(context.TODO(), job.Destination.BigqueryConfig.ProjectId)
+				if err != nil {
+					log.Fatal().Err(err).Msg("bigquery client error")
+				}
+				defer bqclient.Close()
+
+				blobRef := make([]string, 0)
+				for _, b := range blobs {
+					blobRef = append(blobRef, fmt.Sprintf("gs://%s/%s", job.Destination.GoogleStorageConfig.Bucket, b))
+				}
+
+				log.Info().Strs("blobs", blobs).Strs("blobRef", blobRef).Str("table", filter.Target.Table).Str("dataset", job.Destination.BigqueryConfig.Dataset).Msg("blobs loading to bigquery")
+
+				schema, err := bigquery.SchemaFromJSON([]byte(filter.Schema))
+				if err != nil {
+					log.Fatal().Err(err).Msg("bigquery schema parsing error")
+				}
+
+				gcsRef := bigquery.NewGCSReference(blobRef...)
+				gcsRef.IgnoreUnknownValues = true
+				gcsRef.SourceFormat = bigquery.JSON
+				gcsRef.Schema = schema
+				loader := bqclient.Dataset(job.Destination.BigqueryConfig.Dataset).Table(filter.Target.Table).LoaderFrom(gcsRef)
+				loader.WriteDisposition = bigquery.WriteAppend
+				loader.CreateDisposition = bigquery.CreateIfNeeded
+				bqJob, err := loader.Run(context.TODO())
+				if err != nil {
+					log.Fatal().Err(err).Msg("bigquery load error")
+				}
+				status, err := bqJob.Wait(context.TODO())
+				if err != nil {
+					log.Fatal().Err(err).Msg("bigquery load error")
+				}
+				if status.Err() != nil {
+					log.Fatal().Err(status.Err()).Msg("job completed with errors")
+				}
+				log.Info().Msg("loading to bigquery completed")
+			}
+		}
 	}()
 	return ch
 }
@@ -293,13 +354,13 @@ var (
 	writerMutex    sync.Mutex
 )
 
-func WaitAndGoogleStorageSync(wg *sync.WaitGroup, job Job, eventChannel chan *pubsub.Message) {
+func WaitAndGoogleStorageSync(ctx context.Context, wg *sync.WaitGroup, job Job, eventChannel chan *pubsub.Message, loadToBigQuery bool) {
 	wg.Add(1)
-	storageCtx := context.Background()
-	storageClient, err := storage.NewClient(storageCtx)
+	storageClient, err := storage.NewClient(ctx)
 	if err != nil {
 		log.Fatal().Err(err).Msg("google storage client client error")
 	}
+
 	ignored := uint64(0)
 
 	// Create a map of event tables to insert into
@@ -318,10 +379,20 @@ func WaitAndGoogleStorageSync(wg *sync.WaitGroup, job Job, eventChannel chan *pu
 	for _, filter := range job.Filters {
 		log := log.With().Str("eventType", filter.Name).Logger()
 		if filter.Action == "ingest" {
+
+			if loadToBigQuery {
+				//to fail early if schema is invalid
+				_, err := bigquery.SchemaFromJSON([]byte(filter.Schema))
+				if err != nil {
+					log.Fatal().Err(err).Msg("bigquery schema parsing error")
+				}
+			}
+
 			messagesToIngest[filter.Name] = make(chan *pubsub.Message, buffer)
 			it := 0
-			go func(k string) {
-				for mx := range messagesToIngest[k] {
+			go func(filter Filter) {
+
+				for mx := range messagesToIngest[filter.Name] {
 					var event map[string]interface{}
 					err := json.Unmarshal(mx.Data, &event)
 					if err != nil {
@@ -329,22 +400,33 @@ func WaitAndGoogleStorageSync(wg *sync.WaitGroup, job Job, eventChannel chan *pu
 						log.Error().Err(err).Msg("unable to unmarshal event")
 						continue
 					}
-					etNumber := event[job.Destination.TimestampColumnName].(float64)
-					et := time.Unix(int64(etNumber), 0)
 
-					timeKey := fmt.Sprintf("%s-%s", k, et.Format("2006-01-02-15"))
+					var et time.Time
+					if job.Destination.TimestampFormat == "epoch" {
+						etNumber := event[job.Destination.TimestampColumnName].(float64)
+						et = time.Unix(int64(etNumber), 0)
+					} else {
+						etNumber := event[job.Destination.TimestampColumnName].(string)
+						et, err = time.Parse(job.Destination.TimestampFormat, etNumber)
+						if err != nil {
+							log.Error().Err(err).Msg("unable to unmarshal event timestamp")
+							continue
+						}
+					}
+
+					timeKey := fmt.Sprintf("%s-%s", filter.Name, et.Format("2006-01-02-15"))
 
 					wr, ok := timeKeyWriters[timeKey]
 					if !ok {
 						writerMutex.Lock()
-						wr = writeToBlob(et, timeKey, k, job, storageClient, bulkSize)
+						wr = writeToBlob(ctx, et, timeKey, filter, job, storageClient, bulkSize, loadToBigQuery)
 						timeKeyWriters[timeKey] = wr
 						writerMutex.Unlock()
 					}
 					wr <- mx
 					it++
 				}
-			}(filter.Name)
+			}(filter)
 			eventsToIngest[filter.Name] = true
 		} else {
 			eventsToIngest[filter.Name] = false
@@ -373,5 +455,10 @@ func WaitAndGoogleStorageSync(wg *sync.WaitGroup, job Job, eventChannel chan *pu
 				log.Error().Interface("attributes", msg.Attributes).Msg("event type not found")
 			}
 		}
+		log.Error().Msg("closing all job/filter channels")
+		for _, c := range messagesToIngest {
+			close(c)
+		}
+		log.Error().Msg("closed all job/filter channels")
 	}()
 }

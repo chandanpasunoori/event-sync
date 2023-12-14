@@ -23,6 +23,7 @@ type Destination struct {
 	Type                string              `json:"type"`
 	BatchSize           int                 `json:"batchSize"`
 	TimestampColumnName string              `json:"timestampColumnName"`
+	TimestampFormat     string              `json:"timestampFormat"`
 	BigqueryConfig      BigqueryConfig      `json:"bigqueryConfig"`
 	GoogleStorageConfig GoogleStorageConfig `json:"googleStorageConfig"`
 }
@@ -34,6 +35,7 @@ type Filter struct {
 	Name   string `json:"name"`
 	Action string `json:"action"`
 	Target Target `json:"target,omitempty"`
+	Schema string `json:"schema,omitempty"`
 }
 type Job struct {
 	Name        string      `json:"name"`

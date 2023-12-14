@@ -1,10 +1,12 @@
 package cmd
 
 import (
+	"context"
 	"encoding/json"
-	"io/ioutil"
 	"net/http"
 	"os"
+	"os/signal"
+	"time"
 
 	"github.com/chandanpasunoori/event-sync/pkg"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
@@ -15,7 +17,7 @@ import (
 )
 
 const (
-	version = "0.0.6"
+	version = "0.0.7"
 )
 
 var verbose bool
@@ -35,7 +37,7 @@ var rootCmd = &cobra.Command{
 		if verbose {
 			zerolog.SetGlobalLevel(zerolog.TraceLevel)
 		}
-		configBytes, err := ioutil.ReadFile(configDoc)
+		configBytes, err := os.ReadFile(configDoc)
 		if err != nil {
 			log.Error().Err(err).Str("path", configDoc).Msg("config file not found")
 			os.Exit(1)
@@ -45,12 +47,26 @@ var rootCmd = &cobra.Command{
 			os.Exit(1)
 		}
 		log.Info().Str("version", version).Msg("event-sync is ready to sync events")
-		go pkg.SyncEvents(config)
-		runServer()
+
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+
+		signalChan := make(chan os.Signal, 1)
+		signal.Notify(signalChan, os.Interrupt)
+		delay := 15 * time.Second
+		go func() {
+			<-signalChan
+			cancel()
+			log.Info().Str("version", version).Dur("delay", delay).Msgf("program interupted, waiting for %s", delay)
+			<-time.NewTimer(delay).C
+			os.Exit(0)
+		}()
+		go pkg.SyncEvents(ctx, config)
+		runServer(ctx)
 	},
 }
 
-func runServer() {
+func runServer(ctx context.Context) {
 	http.Handle("/metrics", promhttp.Handler())
 	healthCheckHandler := http.HandlerFunc(func(rw http.ResponseWriter, r *http.Request) {
 		rw.Header().Set("content-type", "application/json")
