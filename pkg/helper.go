@@ -219,7 +219,6 @@ func writeToBlob(ctx context.Context, et time.Time, timeKey string, filter Filte
 	blobs := make([]string, 0)
 	go func() {
 		for repeatWriter := true; repeatWriter; {
-			//@todo validate stop when its more than a certain amount of time without any items
 			items := int(0)
 			messagesForAck := []*pubsub.Message{}
 			hrKey := et.Hour()
@@ -289,7 +288,7 @@ func writeToBlob(ctx context.Context, et time.Time, timeKey string, filter Filte
 				log.Fatal().Err(err).Msg("unable to close blob writer")
 			}
 
-			//todo: store blobs to persistant storage (local disk file, sql db, mongo, redis)
+			//@todo: store blobs to persistant storage (local disk file, sql db, mongo, redis)
 			blobs = append(blobs, blobName)
 
 			for _, ms := range messagesForAck {
