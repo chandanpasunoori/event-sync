@@ -33,12 +33,18 @@ type Destination struct {
 type Target struct {
 	Table string `json:"table"`
 }
+
+type BigQueryField struct {
+	Name string `json:"name"`
+	Type string `json:"type"`
+	Mode string `json:"mode"`
+}
 type Filter struct {
-	Type   string `json:"type"`
-	Name   string `json:"name"`
-	Action string `json:"action"`
-	Target Target `json:"target,omitempty"`
-	Schema string `json:"schema,omitempty"`
+	Type   string          `json:"type"`
+	Name   string          `json:"name"`
+	Action string          `json:"action"`
+	Target Target          `json:"target,omitempty"`
+	Schema []BigQueryField `json:"schema,omitempty"`
 }
 type Job struct {
 	Name        string      `json:"name"`

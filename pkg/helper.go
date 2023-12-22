@@ -13,6 +13,7 @@ import (
 	"github.com/chandanpasunoori/event-sync/metrics"
 	"github.com/google/uuid"
 	"github.com/prometheus/client_golang/prometheus"
+	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -288,9 +289,9 @@ func writeToBlob(ctx context.Context, et time.Time, timeKey string, filter Filte
 				log.Fatal().Err(err).Msg("unable to close blob writer")
 			}
 
-			//@todo: store blobs to persistant storage (local disk file, sql db, mongo, redis)
+			// @todo: store blobs to persistant storage (local disk file, sql db, mongo, redis)
 			blobs = append(blobs, blobName)
-
+			// @todo: handle longer than 600s pubsub timeout, may be dynamic ack ttl from sub or config?
 			for _, ms := range messagesForAck {
 				ms.Ack()
 			}
@@ -305,83 +306,92 @@ func writeToBlob(ctx context.Context, et time.Time, timeKey string, filter Filte
 
 		if loadToBigQuery {
 			if len(blobs) > 0 {
-				bqclient, err := bigquery.NewClient(context.TODO(), job.Destination.BigqueryConfig.ProjectId)
-				if err != nil {
-					log.Fatal().Err(err).Msg("bigquery client error")
-				}
-				defer bqclient.Close()
-
-				blobRef := make([]string, 0)
-				for _, b := range blobs {
-					blobRef = append(blobRef, fmt.Sprintf("gs://%s/%s", job.Destination.GoogleStorageConfig.Bucket, b))
-				}
-
-				log.Info().Strs("blobs", blobs).Strs("blobRef", blobRef).Str("table", filter.Target.Table).Str("dataset", job.Destination.BigqueryConfig.Dataset).Msg("blobs loading to bigquery")
-
-				schema, err := bigquery.SchemaFromJSON([]byte(filter.Schema))
-				if err != nil {
-					log.Fatal().Err(err).Msg("bigquery schema parsing error")
-				}
-
-				gcsRef := bigquery.NewGCSReference(blobRef...)
-				gcsRef.IgnoreUnknownValues = true
-				gcsRef.SourceFormat = bigquery.JSON
-				gcsRef.Schema = schema
-				loader := bqclient.Dataset(job.Destination.BigqueryConfig.Dataset).Table(filter.Target.Table).LoaderFrom(gcsRef)
-				loader.WriteDisposition = bigquery.WriteAppend
-				loader.CreateDisposition = bigquery.CreateIfNeeded
-
-				if len(job.Destination.ClusterBy) > 0 {
-					loader.Clustering = &bigquery.Clustering{
-						Fields: job.Destination.ClusterBy,
-					}
-				}
-				if len(job.Destination.TimePartitioningType) > 0 {
-					expire := time.Second * 0
-					if len(job.Destination.Expiration) > 0 {
-						expire, err = time.ParseDuration(job.Destination.Expiration)
-						if err != nil {
-							log.Fatal().Err(err).Str("partitionType", job.Destination.TimePartitioningType).Msg("bigquery invalid partitioning error")
-						}
-					}
-
-					pType := bigquery.DayPartitioningType
-					switch job.Destination.TimePartitioningType {
-					case "HOUR":
-						pType = bigquery.HourPartitioningType
-					case "DAY":
-						pType = bigquery.DayPartitioningType
-					case "MONTH":
-						pType = bigquery.MonthPartitioningType
-					case "YEAR":
-						pType = bigquery.YearPartitioningType
-					default:
-						log.Fatal().Str("partitionType", job.Destination.TimePartitioningType).Msg("bigquery invalid partitioning error")
-					}
-					loader.TimePartitioning = &bigquery.TimePartitioning{
-						Field:                  job.Destination.TimestampColumnName,
-						RequirePartitionFilter: true,
-						Type:                   pType,
-						Expiration:             expire,
-					}
-				}
-
-				bqJob, err := loader.Run(context.TODO())
-				if err != nil {
-					log.Fatal().Err(err).Msg("bigquery load error")
-				}
-				status, err := bqJob.Wait(context.TODO())
-				if err != nil {
-					log.Fatal().Err(err).Msg("bigquery load error")
-				}
-				if status.Err() != nil {
-					log.Fatal().Err(status.Err()).Msg("job completed with errors")
-				}
-				log.Info().Msg("loading to bigquery completed")
+				loadToBigQueryJob(job, log, blobs, filter)
 			}
 		}
 	}()
 	return ch
+}
+
+// @todo: use as callback function from parent and make generic to multiple destinations
+func loadToBigQueryJob(job Job, log zerolog.Logger, blobs []string, filter Filter) {
+	bqclient, err := bigquery.NewClient(context.TODO(), job.Destination.BigqueryConfig.ProjectId)
+	if err != nil {
+		log.Fatal().Err(err).Msg("bigquery client error")
+	}
+	defer bqclient.Close()
+
+	blobRef := make([]string, 0)
+	for _, b := range blobs {
+		blobRef = append(blobRef, fmt.Sprintf("gs://%s/%s", job.Destination.GoogleStorageConfig.Bucket, b))
+	}
+
+	log.Info().Strs("blobs", blobs).Strs("blobRef", blobRef).Str("table", filter.Target.Table).Str("dataset", job.Destination.BigqueryConfig.Dataset).Msg("blobs loading to bigquery")
+
+	schemaTpl, err := json.Marshal(filter.Schema)
+	if err != nil {
+		log.Fatal().Err(err).Msg("bigquery schema parsing error")
+	}
+	schema, err := bigquery.SchemaFromJSON(schemaTpl)
+	if err != nil {
+		log.Fatal().Err(err).Msg("bigquery schema parsing error")
+	}
+
+	gcsRef := bigquery.NewGCSReference(blobRef...)
+	gcsRef.IgnoreUnknownValues = true
+	gcsRef.SourceFormat = bigquery.JSON
+	gcsRef.Schema = schema
+	loader := bqclient.Dataset(job.Destination.BigqueryConfig.Dataset).Table(filter.Target.Table).LoaderFrom(gcsRef)
+	loader.WriteDisposition = bigquery.WriteAppend
+	loader.CreateDisposition = bigquery.CreateIfNeeded
+
+	if len(job.Destination.ClusterBy) > 0 {
+		loader.Clustering = &bigquery.Clustering{
+			Fields: job.Destination.ClusterBy,
+		}
+	}
+	if len(job.Destination.TimePartitioningType) > 0 {
+		expire := time.Second * 0
+		if len(job.Destination.Expiration) > 0 {
+			expire, err = time.ParseDuration(job.Destination.Expiration)
+			if err != nil {
+				log.Fatal().Err(err).Str("partitionType", job.Destination.TimePartitioningType).Msg("bigquery invalid partitioning error")
+			}
+		}
+
+		pType := bigquery.DayPartitioningType
+		switch job.Destination.TimePartitioningType {
+		case "HOUR":
+			pType = bigquery.HourPartitioningType
+		case "DAY":
+			pType = bigquery.DayPartitioningType
+		case "MONTH":
+			pType = bigquery.MonthPartitioningType
+		case "YEAR":
+			pType = bigquery.YearPartitioningType
+		default:
+			log.Fatal().Str("partitionType", job.Destination.TimePartitioningType).Msg("bigquery invalid partitioning error")
+		}
+		loader.TimePartitioning = &bigquery.TimePartitioning{
+			Field:                  job.Destination.TimestampColumnName,
+			RequirePartitionFilter: true,
+			Type:                   pType,
+			Expiration:             expire,
+		}
+	}
+
+	bqJob, err := loader.Run(context.TODO())
+	if err != nil {
+		log.Fatal().Err(err).Msg("bigquery load error")
+	}
+	status, err := bqJob.Wait(context.TODO())
+	if err != nil {
+		log.Fatal().Err(err).Msg("bigquery load error")
+	}
+	if status.Err() != nil {
+		log.Fatal().Interface("errors", status.Errors).Err(status.Err()).Msg("job completed with errors")
+	}
+	log.Info().Msg("loading to bigquery completed")
 }
 
 var (
@@ -417,7 +427,11 @@ func WaitAndGoogleStorageSync(ctx context.Context, wg *sync.WaitGroup, job Job, 
 
 			if loadToBigQuery {
 				//to fail early if schema/config is invalid
-				_, err := bigquery.SchemaFromJSON([]byte(filter.Schema))
+				schemaTpl, err := json.Marshal(filter.Schema)
+				if err != nil {
+					log.Fatal().Err(err).Msg("bigquery schema parsing error")
+				}
+				_, err = bigquery.SchemaFromJSON(schemaTpl)
 				if err != nil {
 					log.Fatal().Err(err).Msg("bigquery schema parsing error")
 				}
@@ -442,7 +456,6 @@ func WaitAndGoogleStorageSync(ctx context.Context, wg *sync.WaitGroup, job Job, 
 			messagesToIngest[filter.Name] = make(chan *pubsub.Message, buffer)
 			it := 0
 			go func(filter Filter) {
-
 				for mx := range messagesToIngest[filter.Name] {
 					var event map[string]interface{}
 					err := json.Unmarshal(mx.Data, &event)
