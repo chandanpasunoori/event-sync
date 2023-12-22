@@ -91,7 +91,7 @@ func WaitAndBQSync(ctx context.Context, wg *sync.WaitGroup, job Job, eventChanne
 		Str("subscriptionId", job.Source.PubsubConfig.SubscriptionId).
 		Logger()
 
-	bqclient, err := bigquery.NewClient(ctx, job.Destination.BigqueryConfig.ProjectId)
+	bqclient, err := bigquery.NewClient(context.TODO(), job.Destination.BigqueryConfig.ProjectId)
 	if err != nil {
 		log.Fatal().Err(err).Msg("bigquery client error")
 	}
@@ -153,7 +153,7 @@ func WaitAndBQSync(ctx context.Context, wg *sync.WaitGroup, job Job, eventChanne
 						log.Info().Dur("duration", du).Msg("items is empty, skipping bq submit")
 						continue
 					}
-					err := inserters[k].Put(ctx, items)
+					err := inserters[k].Put(context.TODO(), items)
 					if err != nil {
 						for _, ms := range messagesForAck {
 							ms.Ack()
