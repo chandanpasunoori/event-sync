@@ -330,6 +330,42 @@ func writeToBlob(ctx context.Context, et time.Time, timeKey string, filter Filte
 				loader := bqclient.Dataset(job.Destination.BigqueryConfig.Dataset).Table(filter.Target.Table).LoaderFrom(gcsRef)
 				loader.WriteDisposition = bigquery.WriteAppend
 				loader.CreateDisposition = bigquery.CreateIfNeeded
+
+				if len(job.Destination.ClusterBy) > 0 {
+					loader.Clustering = &bigquery.Clustering{
+						Fields: job.Destination.ClusterBy,
+					}
+				}
+				if len(job.Destination.TimePartitioningType) > 0 {
+					expire := time.Second * 0
+					if len(job.Destination.Expiration) > 0 {
+						expire, err = time.ParseDuration(job.Destination.Expiration)
+						if err != nil {
+							log.Fatal().Err(err).Str("partitionType", job.Destination.TimePartitioningType).Msg("bigquery invalid partitioning error")
+						}
+					}
+
+					pType := bigquery.DayPartitioningType
+					switch job.Destination.TimePartitioningType {
+					case "HOUR":
+						pType = bigquery.HourPartitioningType
+					case "DAY":
+						pType = bigquery.DayPartitioningType
+					case "MONTH":
+						pType = bigquery.MonthPartitioningType
+					case "YEAR":
+						pType = bigquery.YearPartitioningType
+					default:
+						log.Fatal().Str("partitionType", job.Destination.TimePartitioningType).Msg("bigquery invalid partitioning error")
+					}
+					loader.TimePartitioning = &bigquery.TimePartitioning{
+						Field:                  job.Destination.TimestampColumnName,
+						RequirePartitionFilter: true,
+						Type:                   pType,
+						Expiration:             expire,
+					}
+				}
+
 				bqJob, err := loader.Run(context.TODO())
 				if err != nil {
 					log.Fatal().Err(err).Msg("bigquery load error")
@@ -380,10 +416,26 @@ func WaitAndGoogleStorageSync(ctx context.Context, wg *sync.WaitGroup, job Job, 
 		if filter.Action == "ingest" {
 
 			if loadToBigQuery {
-				//to fail early if schema is invalid
+				//to fail early if schema/config is invalid
 				_, err := bigquery.SchemaFromJSON([]byte(filter.Schema))
 				if err != nil {
 					log.Fatal().Err(err).Msg("bigquery schema parsing error")
+				}
+				if len(job.Destination.Expiration) > 0 {
+					_, err := time.ParseDuration(job.Destination.Expiration)
+					if err != nil {
+						log.Fatal().Err(err).Str("expiration", job.Destination.Expiration).Msg("bigquery invalid expiration error")
+					}
+				}
+				if len(job.Destination.TimePartitioningType) > 0 {
+					switch job.Destination.TimePartitioningType {
+					case "HOUR":
+					case "DAY":
+					case "MONTH":
+					case "YEAR":
+					default:
+						log.Fatal().Str("partitionType", job.Destination.TimePartitioningType).Msg("bigquery invalid partitioning error")
+					}
 				}
 			}
 
@@ -405,15 +457,21 @@ func WaitAndGoogleStorageSync(ctx context.Context, wg *sync.WaitGroup, job Job, 
 						etNumber := event[job.Destination.TimestampColumnName].(float64)
 						et = time.Unix(int64(etNumber), 0)
 					} else {
-						etNumber := event[job.Destination.TimestampColumnName].(string)
-						et, err = time.Parse(job.Destination.TimestampFormat, etNumber)
-						if err != nil {
-							log.Error().Err(err).Msg("unable to unmarshal event timestamp")
-							continue
+						if etNumber, ok := event[job.Destination.TimestampColumnName].(string); ok {
+							et, err = time.Parse(job.Destination.TimestampFormat, etNumber)
+							if err != nil {
+								log.Error().Err(err).Msg("unable to unmarshal event timestamp")
+								mx.Nack()
+								continue
+							}
+						} else {
+							mx.Nack()
+							et = time.Now()
 						}
 					}
 
-					timeKey := fmt.Sprintf("%s-%s", filter.Name, et.Format("2006-01-02-15"))
+					timeKey := fmt.Sprintf("%s-%s", filter.Name, et.Format("2006-01-02-15-04"))
+					timeKey = timeKey[:len(timeKey)-1] //10 minute buckets
 
 					wr, ok := timeKeyWriters[timeKey]
 					if !ok {

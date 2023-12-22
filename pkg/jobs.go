@@ -20,12 +20,15 @@ type GoogleStorageConfig struct {
 	BlobPrefix string `json:"blobPrefix"`
 }
 type Destination struct {
-	Type                string              `json:"type"`
-	BatchSize           int                 `json:"batchSize"`
-	TimestampColumnName string              `json:"timestampColumnName"`
-	TimestampFormat     string              `json:"timestampFormat"`
-	BigqueryConfig      BigqueryConfig      `json:"bigqueryConfig"`
-	GoogleStorageConfig GoogleStorageConfig `json:"googleStorageConfig"`
+	Type                 string              `json:"type"`
+	BatchSize            int                 `json:"batchSize"`
+	TimestampColumnName  string              `json:"timestampColumnName"`
+	TimestampFormat      string              `json:"timestampFormat"`
+	TimePartitioningType string              `json:"timePartitioningType"`
+	Expiration           string              `json:"expiration"`
+	ClusterBy            []string            `json:"clusterBy"`
+	BigqueryConfig       BigqueryConfig      `json:"bigqueryConfig"`
+	GoogleStorageConfig  GoogleStorageConfig `json:"googleStorageConfig"`
 }
 type Target struct {
 	Table string `json:"table"`
