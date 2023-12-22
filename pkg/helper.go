@@ -120,7 +120,12 @@ func WaitAndBQSync(ctx context.Context, wg *sync.WaitGroup, job Job, eventChanne
 			inserters[filter.Name] = bqclient.Dataset(job.Destination.BigqueryConfig.Dataset).Table(filter.Target.Table).Inserter()
 			messagesToIngest[filter.Name] = make(chan *pubsub.Message, buffer)
 			go func(k string) {
-				for {
+				defer func() {
+					if r := recover(); r != nil {
+						log.Error().Interface("panicValue", r).Msg("panicked")
+					}
+				}()
+				for repeatWriter := true; repeatWriter; {
 					items := []Event{}
 					messagesForAck := []*pubsub.Message{}
 					du := time.Second * 10
@@ -132,6 +137,7 @@ func WaitAndBQSync(ctx context.Context, wg *sync.WaitGroup, job Job, eventChanne
 							log.Info().Dur("duration", du).Msg(fmt.Sprintf("bq writer timed out, no events in last %s, breaking loop", du))
 						case <-ctx.Done():
 							repeat = false
+							repeatWriter = false
 							log.Info().Dur("duration", du).Msg("context is cancelled, breaking loop")
 						case mx := <-messagesToIngest[k]:
 							var data map[string]interface{}
@@ -151,6 +157,9 @@ func WaitAndBQSync(ctx context.Context, wg *sync.WaitGroup, job Job, eventChanne
 					timer.Stop()
 					if len(items) <= 0 {
 						log.Info().Dur("duration", du).Msg("items is empty, skipping bq submit")
+						if !repeatWriter {
+							break
+						}
 						continue
 					}
 					err := inserters[k].Put(context.TODO(), items)
@@ -291,6 +300,7 @@ func writeToBlob(ctx context.Context, et time.Time, timeKey string, filter Filte
 
 			// @todo: store blobs to persistant storage (local disk file, sql db, mongo, redis)
 			blobs = append(blobs, blobName)
+			log.Info().Int("messages", items).Msg("messages written to blob")
 			// @todo: handle longer than 600s pubsub timeout, may be dynamic ack ttl from sub or config?
 			for _, ms := range messagesForAck {
 				ms.Ack()
