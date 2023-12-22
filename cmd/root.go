@@ -17,9 +17,7 @@ import (
 	"github.com/spf13/cobra/doc"
 )
 
-const (
-	version = "0.0.7"
-)
+var Version = "0.0.1"
 
 var verbose bool
 var configDoc string
@@ -29,7 +27,7 @@ var rootCmd = &cobra.Command{
 	Use:     "event-sync",
 	Short:   "Event Sync is for syncing events from multiple sources to multiple destinations",
 	Long:    `Built to ease process of syncing data between different storage systems`,
-	Version: version,
+	Version: Version,
 	Run: func(cmd *cobra.Command, args []string) {
 
 		zerolog.TimeFieldFormat = zerolog.TimeFormatUnix
@@ -47,7 +45,7 @@ var rootCmd = &cobra.Command{
 			log.Error().Err(err).Msg("error parsing config")
 			os.Exit(1)
 		}
-		log.Info().Str("version", version).Msg("event-sync is ready to sync events")
+		log.Info().Str("version", Version).Msg("event-sync is ready to sync events")
 
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
@@ -58,7 +56,7 @@ var rootCmd = &cobra.Command{
 		go func() {
 			<-signalChan
 			cancel()
-			log.Info().Str("version", version).Dur("delay", delay).Msgf("program interupted, waiting for %s", delay)
+			log.Info().Str("version", Version).Dur("delay", delay).Msgf("program interupted, waiting for %s", delay)
 			<-time.NewTimer(delay).C
 			os.Exit(0)
 		}()
