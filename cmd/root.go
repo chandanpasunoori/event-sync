@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"syscall"
 	"time"
 
 	"github.com/chandanpasunoori/event-sync/pkg"
@@ -52,7 +53,7 @@ var rootCmd = &cobra.Command{
 		defer cancel()
 
 		signalChan := make(chan os.Signal, 1)
-		signal.Notify(signalChan, os.Interrupt)
+		signal.Notify(signalChan, os.Interrupt, syscall.SIGTERM, syscall.SIGINT)
 		delay := 15 * time.Second
 		go func() {
 			<-signalChan
