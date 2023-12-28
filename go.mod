@@ -7,7 +7,7 @@ require (
 	cloud.google.com/go/pubsub v1.33.0
 	cloud.google.com/go/storage v1.36.0
 	github.com/google/uuid v1.5.0
-	github.com/prometheus/client_golang v1.17.0
+	github.com/prometheus/client_golang v1.18.0
 	github.com/spf13/cobra v1.8.0
 	google.golang.org/grpc v1.60.1
 	k8s.io/client-go v0.29.0
