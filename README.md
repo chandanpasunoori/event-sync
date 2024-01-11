@@ -12,6 +12,23 @@ Event Sync is for syncing events from multiple sources to multiple destinations,
     - Load Jobs (uses Google Cloud Storage)
   - Google Cloud Storage
 
+
+### Synopsis
+
+Built to ease process of syncing data between different storage systems
+
+```
+event-sync [flags]
+```
+
+### Options
+
+```
+  -c, --config string   job configuration file path (default "app.json")
+  -h, --help            help for event-sync
+  -v, --verbose         verbose mode
+```
+
 ## Config Example
 
 ```json

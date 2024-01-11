@@ -5,3 +5,4 @@ cloudbuild.yaml
 dist/
 tmp
 oryxBuildBinary
+docs/
