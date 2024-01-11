@@ -96,11 +96,12 @@ func writeToBlob(ctx context.Context, et time.Time, timeKey string, filter Filte
 				log.Fatal().Err(err).Msg("unable to close blob writer")
 			}
 
-			// @todo store blobs to persistant storage (local disk file, sql db, mongo, redis)
+			// TODO store blobs to persistant storage (local disk file, sql db, mongo, redis)
 			blobs = append(blobs, blobName)
-			// @todo store to go gob
+			// TODO store to go gob
+			// labels: kill-handle
 			log.Info().Int("messages", items).Msg("messages written to blob")
-			// @todo handle longer than 600s pubsub timeout, may be dynamic ack ttl from sub or config?
+			// TODO handle longer than 600s pubsub timeout, may be dynamic ack ttl from sub or config?
 			for _, ms := range messagesForAck {
 				ms.Ack()
 			}
@@ -121,7 +122,7 @@ func writeToBlob(ctx context.Context, et time.Time, timeKey string, filter Filte
 	return ch
 }
 
-// @todo use as callback function from parent and make generic to multiple destinations
+// TODO use as callback function from parent and make generic to multiple destinations
 func loadToBigQueryJob(job Job, log zerolog.Logger, blobs []string, filter Filter) {
 	bqclient, err := bigquery.NewClient(context.TODO(), job.Destination.BigqueryConfig.ProjectId)
 	if err != nil {
@@ -233,7 +234,9 @@ func WaitAndGoogleStorageSync(ctx context.Context, wg *sync.WaitGroup, job Job, 
 		if filter.Action == "ingest" {
 
 			if loadToBigQuery {
-				// @todo check gob and load to bq if present
+				// TODO check gob and load to bq if present
+				// labels: kill-handle
+
 				//to fail early if schema/config is invalid
 				schemaTpl, err := json.Marshal(filter.Schema)
 				if err != nil {
@@ -322,7 +325,7 @@ func WaitAndGoogleStorageSync(ctx context.Context, wg *sync.WaitGroup, job Job, 
 				if _, ok := eventsToIngest[xtype]; ok {
 					messagesToIngest[xtype] <- msg
 				} else {
-					// @todo create separate topic and push all unknown events to it, with attributes and payload
+					// TODO create separate topic and push all unknown events to it, with attributes and payload
 					msg.Ack()
 					log.Error().Interface("attributes", msg.Attributes).Str("eventType", xtype).Msg("event type not found")
 				}
