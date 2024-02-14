@@ -9,7 +9,7 @@ require (
 	github.com/google/uuid v1.5.0
 	github.com/prometheus/client_golang v1.17.0
 	github.com/spf13/cobra v1.8.0
-	google.golang.org/grpc v1.60.1
+	google.golang.org/grpc v1.61.1
 	k8s.io/client-go v0.29.0
 )
 
