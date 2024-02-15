@@ -10,7 +10,7 @@ require (
 	github.com/prometheus/client_golang v1.17.0
 	github.com/spf13/cobra v1.8.0
 	google.golang.org/grpc v1.60.1
-	k8s.io/client-go v0.29.0
+	k8s.io/client-go v0.29.2
 )
 
 require (
@@ -90,7 +90,7 @@ require (
 	google.golang.org/protobuf v1.32.0 // indirect
 	gopkg.in/inf.v0 v0.9.1 // indirect
 	gopkg.in/yaml.v2 v2.4.0 // indirect
-	k8s.io/apimachinery v0.29.0 // indirect
+	k8s.io/apimachinery v0.29.2 // indirect
 	k8s.io/klog/v2 v2.110.1 // indirect
 	k8s.io/utils v0.0.0-20231127182322-b307cd553661 // indirect
 	sigs.k8s.io/structured-merge-diff/v4 v4.4.1 // indirect
